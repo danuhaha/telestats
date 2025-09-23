@@ -1,0 +1,17 @@
+python-dateutil>=2.9.0.post0
+
+telethon>=1.30.0,<2.0
+
+numpy>=1.23
+
+pandas>=1.5
+
+matplotlib>=3.7
+
+seaborn>=0.12.2
+
+wordcloud>=1.9
+
+emoji>=2.8
+
+beautifulsoup4>=4.12
