@@ -1,3 +1,4 @@
+mplcyberpunk
 python-dateutil>=2.9.0.post0
 
 telethon>=1.30.0,<2.0
