@@ -1,13 +1,10 @@
 import os
-import emoji
 import random
 import operator
 import numpy as np
-import pandas as pd
-import seaborn as sns
 import wordcloud as wc
-import os
 import matplotlib
+import emoji
 
 # Use TkAgg when available (GUI), otherwise fall back to Agg for CLI/headless.
 if not os.environ.get("MPLBACKEND"):
@@ -17,11 +14,80 @@ if not os.environ.get("MPLBACKEND"):
     except Exception:
         matplotlib.use("Agg")
 import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import matplotlib.colors as mpl_colors
 import message_analyser.structure_tools as stools
 from message_analyser.misc import avg, log_line, months_border
 
+import mplcyberpunk
+plt.style.use("cyberpunk")
+
+from matplotlib.font_manager import FontProperties, fontManager
+from matplotlib import ft2font
+
+
+def _resolve_emoji_font():
+    candidates = [
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+        "/System/Library/Fonts/Apple Color Emoji.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "Apple Color Emoji",
+        "Segoe UI Emoji",
+        "Noto Color Emoji",
+    ]
+    for candidate in candidates:
+        path = None
+        if os.path.exists(candidate):
+            path = candidate
+        else:
+            try:
+                path = fontManager.findfont(
+                    FontProperties(family=candidate), fallback_to_default=False
+                )
+            except Exception:
+                path = None
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            ft2font.FT2Font(path)
+        except Exception:
+            continue
+        return FontProperties(fname=path)
+    return None
+
+
+_EMOJI_FONT = _resolve_emoji_font()
+
+
+def _load_roboto_font(weight="Regular"):
+    path = os.path.join(
+        os.path.dirname(__file__),
+        "Roboto",
+        "static",
+        f"Roboto-{weight}.ttf",
+    )
+    if os.path.exists(path):
+        try:
+            ft2font.FT2Font(path)
+        except Exception:
+            return None
+        return FontProperties(fname=path)
+    return None
+
+
+_ROBOTO_FONT_MEDIUM = _load_roboto_font("Medium")
+_ROBOTO_FONT_SEMIBOLD = _load_roboto_font("SemiBold")
+
+if _ROBOTO_FONT_MEDIUM:
+    try:
+        font_name = _ROBOTO_FONT_MEDIUM.get_name()
+        matplotlib.rcParams["font.family"] = font_name
+        # Force registration to avoid findfont warnings on first use
+        fontManager.addfont(_ROBOTO_FONT_MEDIUM.get_file())
+        if _ROBOTO_FONT_SEMIBOLD:
+            fontManager.addfont(_ROBOTO_FONT_SEMIBOLD.get_file())
+    except Exception:
+        pass
 
 def _change_bar_width(ax, new_value):
     # https://stackoverflow.com/a/44542112
@@ -36,47 +102,71 @@ def _change_bar_width(ax, new_value):
         patch.set_x(patch.get_x() + diff * .5)
 
 
-def heat_map(msgs, path_to_save, seasons=False):
-    sns.set(style="whitegrid")
+def _init_axes(figsize, subplot_kw=None):
+    fig, ax = plt.subplots(figsize=figsize, subplot_kw=subplot_kw or {})
+    _sync_axes_with_style(ax)
+    return fig, ax
 
+
+def _sync_axes_with_style(ax):
+    fig = ax.figure
+    fig.patch.set_facecolor(plt.rcParams.get("figure.facecolor"))
+    ax.set_facecolor(plt.rcParams.get("axes.facecolor"))
+    edge_color = plt.rcParams.get("axes.edgecolor")
+    for spine in ax.spines.values():
+        spine.set_color(edge_color)
+    tick_color = plt.rcParams.get("xtick.color")
+    ax.tick_params(axis="x", colors=tick_color)
+    ax.tick_params(axis="y", colors=tick_color)
+    label_color = plt.rcParams.get("axes.labelcolor")
+    ax.xaxis.label.set_color(label_color)
+    ax.yaxis.label.set_color(label_color)
+    ax.title.set_color(plt.rcParams.get("text.color"))
+
+
+def heat_map(msgs, path_to_save, seasons=False):
     messages_per_day = stools.get_messages_per_day(msgs)
     months = stools.date_months_to_str_months(stools.get_months(msgs))
-    heat_calendar = {month: np.array([None] * 31, dtype=np.float64) for month in months}
+    heat_calendar = {month: np.full(31, np.nan, dtype=float) for month in months}
     for day, d_msgs in messages_per_day.items():
         heat_calendar[stools.str_month(day)][day.day - 1] = len(d_msgs)
 
-    # min_day = len(min(messages_per_day.values(), key=len))
     max_day = len(max(messages_per_day.values(), key=len))
+    data = np.array(list(heat_calendar.values()), dtype=float)
 
-    data = np.array(list(heat_calendar.values()))
-    mask = np.array([np.array(arr, dtype=bool) for arr in data])
+    fig, ax = _init_axes(figsize=(11, 8))
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_simple", [(0.0, "#222946"),(0.4, "#aa4680"),(1.0, "#c32374") ])
+    if hasattr(cmap, "copy"):
+        cmap = cmap.copy()
+    cmap.set_bad(ax.get_facecolor())
 
-    cmap = cm.get_cmap("Purples")
+    im = ax.imshow(data, cmap=cmap, aspect="equal", interpolation="nearest",
+                   vmin=0, vmax=max_day)
 
-    center = max_day * 0.4  # (avg([len(d) for d in messages_per_day.values()]) + (max_day - min_day) / 2) / 2
-
-    ax = sns.heatmap(data=data, cmap=cmap, center=center, xticklabels=True, yticklabels=True,
-                     square=True, linewidths=.2, cbar_kws={"shrink": .5})
-
-    # builds a mask to highlight empty days
-    sns.heatmap(data, mask=mask,
-                xticklabels=range(1, 32),
-                yticklabels=months,
-                linewidths=.2, cbar=False, cmap=mpl_colors.ListedColormap(["#ffffe6"]))
-
-    if seasons:  # divides heatmap on seasons
-        season_lines = [i for i, m in enumerate(months) if m.month % 3 == 0 and i != 0]
-        ax.hlines(season_lines, *ax.get_xlim(), colors=["b"])
-    ax.set(xlabel="day", ylabel="month")
+    ax.set_xticks(np.arange(31))
+    ax.set_xticklabels(range(1, 32))
+    ax.set_yticks(np.arange(len(months)))
+    ax.set_yticklabels(months)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel="Day", **label_props)
+    ax.set_ylabel(ylabel="Month", **label_props)
     ax.margins(x=0)
+    ax.grid(False)
 
-    plt.tight_layout()
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.015, pad=0.05)
+    cbar.ax.yaxis.set_tick_params(colors=plt.rcParams.get("xtick.color"))
+    cbar.outline.set_edgecolor(plt.rcParams.get("axes.edgecolor"))
+
+    if seasons:
+        season_lines = [i for i, m in enumerate(months) if m.month % 3 == 0 and i != 0]
+        for line in season_lines:
+            ax.axhline(line - 0.5, color="C0", linewidth=1.0)
+
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, heat_map.__name__ + ".png"), dpi=500)
-
-    # plt.show()
-    plt.close("all")
+    plt.close(fig)
     log_line(f"{heat_map.__name__} was created.")
 
 
@@ -88,24 +178,31 @@ def pie_messages_per_author(msgs, your_name, target_name, path_to_save):
     data = [your_messages_len, target_messages_len, forwarded]
     labels = [f"{your_name}\n({your_messages_len})",
               f"{target_name}\n({target_messages_len})",
-              f"forwarded\n({forwarded})"]
+              f"Forwarded\n({forwarded})"]
     explode = (.0, .0, .2)
 
-    fig, ax = plt.subplots(figsize=(13, 8), subplot_kw=dict(aspect="equal"))
+    fig, ax = _init_axes(figsize=(8, 8), subplot_kw=dict(aspect="equal"))
 
-    wedges, _, autotexts = ax.pie(x=data, explode=explode, colors=["#4982BB", "#5C6093", "#53B8D7"],
+    text_props = {"color": "white"}
+    if _ROBOTO_FONT_SEMIBOLD:
+        text_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+
+    wedges, _, autotexts = ax.pie(x=data, explode=explode, colors=["C0","C1","#6062db"],
                                   autopct=lambda pct: f"{pct:.1f}%",
-                                  wedgeprops={"edgecolor": "black", "alpha": 0.8})
+                                  wedgeprops={ "alpha": 0.85},
+                                  textprops=text_props)
 
-    ax.legend(wedges, labels,
-              loc="upper right",
-              bbox_to_anchor=(1, 0, 0.5, 1))
+    legend_kwargs = {"loc": "center", "bbox_to_anchor": (0.5, -0.05), "ncol": 3}
+    if _ROBOTO_FONT_SEMIBOLD:
+        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
+    ax.legend(wedges, labels, **legend_kwargs)
 
-    plt.setp(autotexts, size=10, weight="bold")
+    plt.setp(autotexts, color="white", fontsize=13, weight="bold")
 
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, pie_messages_per_author.__name__ + ".png"), dpi=500)
     # plt.show()
-    plt.close("all")
+    plt.close(fig)
     log_line(f"{pie_messages_per_author.__name__} was created.")
 
 
@@ -114,7 +211,7 @@ def _get_xticks(msgs, crop=True):
     xticks = []
     months_num = stools.count_months(msgs)
     if months_num > months_border:
-        xlabel = "month"
+        xlabel = "Month"
         months_ticks = stools.get_months(msgs)
         xticks_labels = stools.date_months_to_str_months(months_ticks)
         if (months_ticks[1] - start_date).days < 10 and crop:
@@ -173,13 +270,19 @@ def _get_plot_data(msgs):
 
 
 def stackplot_non_text_messages_percentage(msgs, path_to_save):
-    sns.set(style="whitegrid", palette="muted")
-
-    colors = ['y', 'b', 'c', 'r', 'g', 'm', 'k']
-
     (x, y_total), (xticks, xticks_labels, xlabel) = _get_plot_data(msgs), _get_xticks(msgs)
 
     stacks = stools.get_non_text_messages_grouped(y_total)
+    colors = [
+        "#4e8be1",  # Light blue
+        "#4f5c8e",  # Dark blue
+        "#00c3cc",  # Cyan
+        "#6a44a6",  # Purple
+        "#a64cb0",  # Magenta
+        "#9b2d9f",  # Dark purple
+        "#e6248b"  # Pink
+    ]
+    #colors = cm.get_cmap("BuPu")(np.linspace(0, 0.9, len(stacks)))
 
     # Normalize values
     for i in range(len(stacks[0]["groups"])):
@@ -190,140 +293,165 @@ def stackplot_non_text_messages_percentage(msgs, path_to_save):
             else:
                 stack["groups"][i] /= total
 
-    plt.stackplot(x, *[stack["groups"] for stack in stacks], labels=[stack["type"] for stack in stacks],
-                  colors=colors, alpha=0.7)
+
+    labels = [stack["type"] for stack in stacks]
+    plt.stackplot(x, *[stack["groups"] for stack in stacks], labels=labels,
+                  colors=colors, alpha=0.85)
 
     plt.margins(0, 0)
-    plt.xticks(xticks, rotation=65)
+    plt.xticks(xticks,rotation = 65)
     plt.yticks([i / 10 for i in range(0, 11, 2)])
 
     ax = plt.gca()
+    _sync_axes_with_style(ax)
     ax.set_xticklabels(xticks_labels)
     ax.set_yticklabels([f"{i}%" for i in range(0, 101, 20)])
     ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
-    ax.set(xlabel=xlabel, ylabel="non-text messages")
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Non-text messages percentage", **label_props)
 
     # https://stackoverflow.com/a/4701285
     # Shrink current axis by 10%
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width * 0.9, box.height])
     # Put a legend to the right of the current axis
-    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+    legend_kwargs = {"loc": "center left", "bbox_to_anchor": (1, 0.5)}
+    if _ROBOTO_FONT_SEMIBOLD:
+        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
 
-    fig = plt.gcf()
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1],**legend_kwargs)
+
+    fig = ax.figure
     fig.set_size_inches(11, 8)
 
     fig.savefig(os.path.join(path_to_save, stackplot_non_text_messages_percentage.__name__ + ".png"), dpi=500)
-    # plt.show()
     log_line(f"{stackplot_non_text_messages_percentage.__name__} was created.")
-    plt.close("all")
+    plt.close(fig)
 
 
 def barplot_non_text_messages(msgs, path_to_save):
-    sns.set(style="whitegrid", palette="muted")
-
-    colors = ['y', 'b', 'c', 'r', 'g', 'm', 'k']
-
     (x, y_total), (xticks, xticks_labels, xlabel) = _get_plot_data(msgs), _get_xticks(msgs, crop=False)
 
     bars = stools.get_non_text_messages_grouped(y_total)
+    colors = [
+        "#4e8be1",  # Light blue
+        "#4f5c8e",  # Dark blue
+        "#00c3cc",  # Cyan
+        "#6a44a6",  # Purple
+        "#a64cb0",  # Magenta
+        "#9b2d9f",  # Dark purple
+        "#e6248b"  # Pink
+    ]
+    #colors = cm.get_cmap("BuPu")(np.linspace(0, 0.9, len(bars)))
 
-    # bars are overlapping, so firstly we need to sum up the all...
-    sum_bars = [0] * len(y_total)
+    fig, ax = _init_axes(figsize=(16, 8))
+    positions = np.arange(len(xticks_labels))
+
+    sum_bars = np.zeros(len(y_total))
     for bar in bars:
-        sum_bars = list(map(operator.add, sum_bars, bar["groups"]))
-    # ... plot and subtract one by one.
-    for i, bar in enumerate(bars[:-1]):
-        sns.barplot(x=xticks_labels, y=sum_bars, label=bar["type"], color=colors[i])
-        sum_bars = list(map(operator.sub, sum_bars, bar["groups"]))
-    ax = sns.barplot(x=xticks_labels, y=sum_bars, label=bars[-1]["type"], color=colors[-1])
-    _change_bar_width(ax, 1.)
+        sum_bars += np.array(bar["groups"])
 
-    # https://stackoverflow.com/a/4701285
-    # Shrink current axis by 10%
+    for i, bar in enumerate(bars[:-1]):
+        bar_i = ax.bar(positions, sum_bars, label=bar["type"], color=colors[i], edgecolor="none")
+        sum_bars -= np.array(bar["groups"])
+        #mplcyberpunk.add_bar_gradient(bars=bar_i)
+
+    bar_1 = ax.bar(positions, sum_bars, label=bars[-1]["type"], color=colors[-1], edgecolor="none")
+    _change_bar_width(ax, 0.9)
+    #mplcyberpunk.add_bar_gradient(bars=bar_1)
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(xticks_labels)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width * 0.9, box.height])
-    # Put a legend to the right of the current axis
-    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5))
-
-    ax.set_xticklabels(xticks_labels, ha="right")
-    ax.set(xlabel=xlabel, ylabel="messages")
-
-    plt.xticks(rotation=65)
-    fig = plt.gcf()
-    fig.set_size_inches(16, 8)
+    legend_kwargs = {"loc": "center left", "bbox_to_anchor": (1, 0.5)}
+    if _ROBOTO_FONT_SEMIBOLD:
+        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
+    ax.legend(**legend_kwargs)
 
     fig.savefig(os.path.join(path_to_save, barplot_non_text_messages.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{barplot_non_text_messages.__name__} was created.")
-    plt.close("all")
 
 
 def barplot_messages_per_day(msgs, path_to_save):
-    sns.set(style="whitegrid", palette="muted")
-    sns.despine(top=True)
-
-    messages_per_day_vals = stools.get_messages_per_day(msgs).values()
+    messages_per_day_vals = list(stools.get_messages_per_day(msgs).values())
 
     xticks, xticks_labels, xlabel = _get_xticks(msgs)
 
-    min_day = len(min(messages_per_day_vals, key=lambda day: len(day)))
-    max_day = len(max(messages_per_day_vals, key=lambda day: len(day)))
-    pal = sns.color_palette("Greens_d", max_day - min_day + 1)[::-1]
+    min_day = len(min(messages_per_day_vals, key=len))
+    max_day = len(max(messages_per_day_vals, key=len))
+    levels = max_day - min_day + 1 or 1
+    greens = cm.get_cmap("PuRd")(np.linspace(0.3, 0.9, max(levels, 1)))
+    colors = [greens[len(day) - min_day] for day in messages_per_day_vals]
 
-    ax = sns.barplot(x=list(range(len(messages_per_day_vals))), y=[len(day) for day in messages_per_day_vals],
-                     edgecolor="none", palette=np.array(pal)[[len(day) - min_day for day in messages_per_day_vals]])
-    _change_bar_width(ax, 1.)
-    ax.set(xlabel=xlabel, ylabel="messages")
+    fig, ax = _init_axes(figsize=(20, 10))
+    positions = np.arange(len(messages_per_day_vals))
+    counts = [len(day) for day in messages_per_day_vals]
+    bars = ax.bar(positions, counts, color=colors, edgecolor="none")
+    mplcyberpunk.add_bar_gradient(bars=bars)
+
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    _change_bar_width(ax, 1.0)
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+    ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
+    ax.set_xticks(xticks)
     ax.set_xticklabels(xticks_labels)
 
-    ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
-    plt.xticks(xticks, rotation=65)
-
-    fig = plt.gcf()
-    fig.set_size_inches(20, 10)
     fig.savefig(os.path.join(path_to_save, barplot_messages_per_day.__name__ + ".png"), dpi=500)
+    plt.close(fig)
 
-    # plt.show()
     log_line(f"{barplot_messages_per_day.__name__} was created.")
-    plt.close("all")
 
 
 def barplot_messages_per_minutes(msgs, path_to_save, minutes=2):
-    sns.set(style="whitegrid", palette="muted")
-    sns.despine(top=True)
-
     messages_per_minutes = stools.get_messages_per_minutes(msgs, minutes)
+    minute_values = list(messages_per_minutes.values())
 
     xticks_labels = stools.get_hours()
     xticks = [i * 60 // minutes for i in range(24)]
 
-    min_minutes = len(min(messages_per_minutes.values(), key=lambda day: len(day)))
-    max_minutes = len(max(messages_per_minutes.values(), key=lambda day: len(day)))
-    pal = sns.color_palette("GnBu_d", max_minutes - min_minutes + 1)[::-1]
+    min_minutes = len(min(minute_values, key=len))
+    max_minutes = len(max(minute_values, key=len))
+    levels = max_minutes - min_minutes + 1 or 1
+    gnbu = cm.get_cmap("PuRd")(np.linspace(0.3, 0.9, max(levels, 1)))
+    colors = [gnbu[len(day) - min_minutes] for day in minute_values]
 
-    ax = sns.barplot(x=list(range(len(messages_per_minutes))), y=[len(day) for day in messages_per_minutes.values()],
-                     edgecolor="none",
-                     palette=np.array(pal)[[len(day) - min_minutes for day in messages_per_minutes.values()]])
-    _change_bar_width(ax, 1.)
-    ax.set(xlabel="hour", ylabel="messages")
+    fig, ax = _init_axes(figsize=(20, 10))
+    positions = np.arange(len(minute_values))
+    counts = [len(day) for day in minute_values]
+    bars = ax.bar(positions, counts, color=colors, edgecolor="none")
+
+    _change_bar_width(ax, 1.0)
+    mplcyberpunk.add_bar_gradient(bars=bars)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel("Hour", **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+    ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
+    ax.set_xticks(xticks)
     ax.set_xticklabels(xticks_labels)
 
-    ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
-    plt.xticks(xticks, rotation=65)
-
-    fig = plt.gcf()
-    fig.set_size_inches(20, 10)
-
     fig.savefig(os.path.join(path_to_save, barplot_messages_per_minutes.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{barplot_messages_per_minutes.__name__} was created.")
-    plt.close("all")
 
 
 def barplot_words(msgs, your_name, target_name, words, topn, path_to_save):
-    sns.set(style="whitegrid")
-
     your_msgs = [msg for msg in msgs if msg.author == your_name]
     target_msgs = [msg for msg in msgs if msg.author == target_name]
 
@@ -331,30 +459,36 @@ def barplot_words(msgs, your_name, target_name, words, topn, path_to_save):
     target_words_cnt = stools.get_words_countered(target_msgs)
 
     words.sort(key=lambda w: your_words_cnt[w] + target_words_cnt[w], reverse=True)
-    df_dict = {"name": [], "word": [], "num": []}
-    for word in words[:topn]:
-        df_dict["word"].extend([word, word])
-        df_dict["name"].append(your_name)
-        df_dict["num"].append(your_words_cnt[word])
-        df_dict["name"].append(target_name)
-        df_dict["num"].append(target_words_cnt[word])
+    selected_words = words[:topn]
+    indices = np.arange(len(selected_words))
+    width = 0.4
 
-    ax = sns.barplot(x="word", y="num", hue="name", data=pd.DataFrame(df_dict), palette="PuBu")
-    ax.legend(ncol=1, loc="upper right", frameon=True)
-    ax.set(ylabel="messages", xlabel='')
+    your_counts = [your_words_cnt.get(word, 0) for word in selected_words]
+    target_counts = [target_words_cnt.get(word, 0) for word in selected_words]
 
-    fig = plt.gcf()
-    fig.set_size_inches(14, 8)
+    fig, ax = _init_axes(figsize=(14, 8))
+    bars1 = ax.bar(indices - width / 2, your_counts, width=width, label=your_name, color="C0")
+    bars2 = ax.bar(indices + width / 2, target_counts, width=width, label=target_name, color="C1")
+    mplcyberpunk.add_bar_gradient(bars=bars1)
+    mplcyberpunk.add_bar_gradient(bars=bars2)
 
+    ax.set_xticks(indices)
+    ax.set_xticklabels(selected_words, rotation=45, ha="right")
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel("", **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+    ax.legend(loc="upper right")
+
+
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, barplot_words.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{barplot_words.__name__} was created.")
-    plt.close("all")
 
 
 def barplot_emojis(msgs, your_name, target_name, topn, path_to_save):
-    sns.set(style="whitegrid")
-
     mc_emojis = stools.get_emoji_countered(msgs).most_common(topn)
     if not mc_emojis:
         return
@@ -364,175 +498,226 @@ def barplot_emojis(msgs, your_name, target_name, topn, path_to_save):
     your_emojis_cnt = stools.get_emoji_countered(your_msgs)
     target_emojis_cnt = stools.get_emoji_countered(target_msgs)
 
-    df_dict = {"name": [], "emoji": [], "num": []}
-    for e, _ in mc_emojis:
-        df_dict["emoji"].extend([emoji.demojize(e), emoji.demojize(e)])
-        df_dict["name"].append(your_name)
-        df_dict["num"].append(your_emojis_cnt[e])
-        df_dict["name"].append(target_name)
-        df_dict["num"].append(target_emojis_cnt[e])
+    emo_labels = [e for e, _ in mc_emojis]
+    indices = np.arange(len(emo_labels))
+    width = 0.4
 
-    ax = sns.barplot(x="num", y="emoji", hue="name", data=pd.DataFrame(df_dict), palette="PuBu")
-    ax.set(ylabel="emoji name", xlabel="emojis")
-    ax.legend(ncol=1, loc="lower right", frameon=True)
+    your_counts = [your_emojis_cnt.get(e, 0) for e, _ in mc_emojis]
+    target_counts = [target_emojis_cnt.get(e, 0) for e, _ in mc_emojis]
 
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
-    plt.tight_layout()
+    fig, ax = _init_axes(figsize=(11, 8))
+    bars1 = ax.bar(indices - width / 2, your_counts, width=width, label=your_name, color="C0")
+    bars2 = ax.bar(indices + width / 2, target_counts, width=width, label=target_name, color="C1")
+    mplcyberpunk.add_bar_gradient(bars=bars1)
+    mplcyberpunk.add_bar_gradient(bars=bars2)
 
+    ax.set_xticks(indices)
+    if _EMOJI_FONT:
+        ax.set_xticklabels(emo_labels)
+        for label in ax.get_xticklabels():
+            label.set_fontproperties(_EMOJI_FONT)
+            label.set_rotation(0)
+    else:
+        fallback_labels = [emoji.demojize(e).strip(':').replace('_', ' ') for e, _ in mc_emojis]
+        ax.set_xticklabels(fallback_labels, rotation=35, ha="right")
+        ax.tick_params(axis='x', labelsize=10)
+
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel("Emoji", **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+
+    legend_kwargs = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
+    ax.legend(loc="upper right", **legend_kwargs)
+
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, barplot_emojis.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{barplot_emojis.__name__} was created.")
-    plt.close("all")
 
 
 def barplot_messages_per_weekday(msgs, your_name, target_name, path_to_save):
-    sns.set(style="whitegrid", palette="pastel")
-
     messages_per_weekday = stools.get_messages_per_weekday(msgs)
+    weekday_values = list(messages_per_weekday.values())
     labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
-    ax = sns.barplot(x=labels, y=[len(weekday) for weekday in messages_per_weekday.values()],
-                     label=your_name, color="b")
-    sns.set_color_codes("muted")
-    sns.barplot(x=labels,
-                y=[len([msg for msg in weekday if msg.author == target_name])
-                   for weekday in messages_per_weekday.values()],
-                label=target_name, color="b")
+    your_counts = [len([msg for msg in weekday if msg.author == your_name])
+                   for weekday in weekday_values]
+    target_counts = [len([msg for msg in weekday if msg.author == target_name])
+                    for weekday in weekday_values]
 
-    ax.legend(ncol=2, loc="lower right", frameon=True)
-    ax.set(ylabel="messages")
-    sns.despine(right=True, top=True)
+    positions = np.arange(len(labels))
+    width = 0.4
 
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
+    fig, ax = _init_axes(figsize=(11, 8))
+    bars1 = ax.bar(positions - width / 2, your_counts, width=width, label=your_name, color="C0")
+    bars2 = ax.bar(positions + width / 2, target_counts, width=width, label=target_name, color="C1")
+    mplcyberpunk.add_bar_gradient(bars=bars1)
+    mplcyberpunk.add_bar_gradient(bars=bars2)
 
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_ylabel("Messages count", **label_props)
+
+    legend_kwargs = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
+    ax.legend(loc="upper right", **legend_kwargs)
+    ax.set_ylim([0,4000])
+
+
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, barplot_messages_per_weekday.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{barplot_messages_per_weekday.__name__} was created.")
-    plt.close("all")
 
 
 def distplot_messages_per_hour(msgs, path_to_save):
-    sns.set(style="whitegrid")
+    data = [msg.date.hour for msg in msgs]
 
-    ax = sns.histplot([msg.date.hour for msg in msgs], bins=range(25), color="m", kde=False, discrete=True)
-    ax.set_xticklabels(stools.get_hours())
-    ax.set(xlabel="hour", ylabel="messages")
+    counts, bins = np.histogram(data, bins=range(25))
+
+    fig, ax = _init_axes(figsize=(11, 8))
+    bars = ax.bar(bins[:-1], counts, width=np.diff(bins)*0.95, align="edge",
+                  color="#c32374", edgecolor="none")
+    mplcyberpunk.add_bar_gradient(bars=bars)
+    ax.set_xticks(range(24))
+    ax.set_xticklabels(stools.get_hours(), rotation=65)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel("Hour", **label_props)
+    ax.set_ylabel("Messages count", **label_props)
     ax.margins(x=0)
 
-    plt.xticks(range(24), rotation=65)
-    plt.tight_layout()
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
-
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, distplot_messages_per_hour.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{distplot_messages_per_hour.__name__} was created.")
-    plt.close("all")
 
 
 def distplot_messages_per_day(msgs, path_to_save):
-    sns.set(style="whitegrid")
-
     data = stools.get_messages_per_day(msgs)
 
     max_day_len = len(max(data.values(), key=len))
-    ax = sns.histplot([len(day) for day in data.values()],
-                      bins=list(range(0, max_day_len, 50)) + [max_day_len],
-                      color="m", kde=False)
-    ax.set(xlabel="messages", ylabel="days")
+    values = [len(day) for day in data.values()]
+    bins = list(range(0, max_day_len, 50)) + [max_day_len]
+    if len(bins) < 2:
+        bins = [0, max_day_len or 1]
+    hist_counts, edges = np.histogram(values, bins=bins)
+
+
+
+    fig, ax = _init_axes(figsize=(11, 8))
+    bars = ax.bar(edges[:-1], hist_counts, width=np.diff(edges)*0.95, align="edge",
+                  color="#c32374", edgecolor="none")
+    mplcyberpunk.add_bar_gradient(bars=bars)
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel("Messages count", **label_props)
+    ax.set_ylabel("Number of days", **label_props)
     ax.margins(x=0)
 
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
-
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, distplot_messages_per_day.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{distplot_messages_per_day.__name__} was created.")
-    plt.close("all")
 
 
 def distplot_messages_per_month(msgs, path_to_save):
-    sns.set(style="whitegrid")
-
     start_date = msgs[0].date.date()
     (xticks, xticks_labels, xlabel) = _get_xticks(msgs)
 
-    ax = sns.histplot([(msg.date.date() - start_date).days for msg in msgs],
-                      bins=xticks + [(msgs[-1].date.date() - start_date).days], color="m", kde=False)
+    bins = xticks + [(msgs[-1].date.date() - start_date).days]
+    data = [(msg.date.date() - start_date).days for msg in msgs]
+
+    hist_counts, _ = np.histogram(data, bins=bins)
+
+    fig, ax = _init_axes(figsize=(11, 8))
+    bars = ax.bar(bins[:-1], hist_counts, width=np.diff(bins)*0.95, align="edge",
+                  color="#c32374", edgecolor="none")
+    mplcyberpunk.add_bar_gradient(bars=bars)
+    ax.set_xticks(xticks)
     ax.set_xticklabels(xticks_labels)
-    ax.set(xlabel=xlabel, ylabel="messages")
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Messages count", **label_props)
     ax.margins(x=0)
 
-    plt.xticks(xticks, rotation=65)
-    plt.tight_layout()
-    fig = plt.gcf()
-    fig.set_size_inches(11, 8)
-
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, distplot_messages_per_month.__name__ + ".png"), dpi=500)
-    # plt.show()
+    plt.close(fig)
     log_line(f"{distplot_messages_per_month.__name__} was created.")
-    plt.close("all")
 
 
 def lineplot_message_length(msgs, your_name, target_name, path_to_save):
-    sns.set(style="whitegrid")
-
     (x, y_total), (xticks, xticks_labels, xlabel) = _get_plot_data(msgs), _get_xticks(msgs)
 
     y_your = [avg([len(msg.text) for msg in period if msg.author == your_name]) for period in y_total]
     y_target = [avg([len(msg.text) for msg in period if msg.author == target_name]) for period in y_total]
 
-    plt.fill_between(x, y_your, alpha=0.3)
-    ax = sns.lineplot(x=x, y=y_your, palette="denim blue", linewidth=2.5, label=your_name)
-    plt.fill_between(x, y_target, alpha=0.3)
-    sns.lineplot(x=x, y=y_target, linewidth=2.5, label=target_name)
+    fig, ax = _init_axes(figsize=(13, 7))
+    #ax.fill_between(x, y_your, alpha=0.3, color="C0")
+    line_you, = ax.plot(x, y_your, linewidth=2.5, color="C0")
+    #ax.fill_between(x, y_target, alpha=0.3, color="C1")
+    line_target, = ax.plot(x, y_target, linewidth=2.5, color="C1")
+    mplcyberpunk.make_lines_glow()
+    mplcyberpunk.add_gradient_fill(alpha_gradientglow=0.5)
 
-    ax.set(xlabel=xlabel, ylabel="average message length (characters)")
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Average message length (characters)", **label_props)
+    ax.set_xticks(xticks)
     ax.set_xticklabels(xticks_labels)
-
     ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
-    plt.xticks(xticks, rotation=65)
     ax.margins(x=0, y=0)
+    ax.legend([line_you, line_target], [your_name, target_name], prop=_ROBOTO_FONT_SEMIBOLD, loc ="upper center")
 
-    # plt.tight_layout()
-    fig = plt.gcf()
-    fig.set_size_inches(13, 7)
-
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, lineplot_message_length.__name__ + ".png"), dpi=500)
-    # plt.show()
-    plt.close("all")
+    plt.close(fig)
     log_line(f"{lineplot_message_length.__name__} was created.")
 
 
 def lineplot_messages(msgs, your_name, target_name, path_to_save):
-    sns.set(style="whitegrid")
-
     (x, y_total), (xticks, xticks_labels, xlabel) = _get_plot_data(msgs), _get_xticks(msgs)
 
     y_your = [len([msg for msg in period if msg.author == your_name]) for period in y_total]
     y_target = [len([msg for msg in period if msg.author == target_name]) for period in y_total]
 
-    plt.fill_between(x, y_your, alpha=0.3)
-    ax = sns.lineplot(x=x, y=y_your, palette="denim blue", linewidth=2.5, label=your_name)
-    plt.fill_between(x, y_target, alpha=0.3)
-    sns.lineplot(x=x, y=y_target, linewidth=2.5, label=target_name)
+    fig, ax = _init_axes(figsize=(13, 7))
+    #ax.fill_between(x, y_your, alpha=0.3, color="C0")
+    line_you, = ax.plot(x, y_your, linewidth=2.5, color="C0")
+    #ax.fill_between(x, y_target, alpha=0.3, color="C1")
+    line_target, = ax.plot(x, y_target, linewidth=2.5, color="C1")
+    mplcyberpunk.make_lines_glow()
+    mplcyberpunk.add_gradient_fill(alpha_gradientglow=0.5)
 
-    ax.set(xlabel=xlabel, ylabel="messages")
+    label_props = {}
+    if _ROBOTO_FONT_SEMIBOLD:
+        label_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
+    ax.set_xlabel(xlabel, **label_props)
+    ax.set_ylabel("Messages count", **label_props)
+    ax.set_xticks(xticks)
     ax.set_xticklabels(xticks_labels)
-
     ax.tick_params(axis='x', bottom=True, color="#A9A9A9")
-    plt.xticks(xticks, rotation=65)
     ax.margins(x=0, y=0)
+    ax.legend([line_you, line_target], [your_name, target_name],prop=_ROBOTO_FONT_SEMIBOLD, loc ="upper center")
 
-    # plt.tight_layout()
-    fig = plt.gcf()
-    fig.set_size_inches(13, 7)
-
+    fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, lineplot_messages.__name__ + ".png"), dpi=500)
-    # plt.show()
-    plt.close("all")
+    plt.close(fig)
     log_line(f"{lineplot_messages.__name__} was created.")
 
 

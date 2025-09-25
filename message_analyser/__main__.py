@@ -2,7 +2,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from message_analyser.analyser import analyse_from_file
+from message_analyser.analyser import _analyse  # use directly to avoid nested event-loop
 from message_analyser import analyser as analyser_mod
 from message_analyser import storage
 
@@ -12,7 +12,9 @@ async def run_cli(args):
         path = Path(args.from_file)
         if not path.exists():
             raise SystemExit(f"File not found: {path}")
-        analyse_from_file(str(path))
+        # Load saved messages and analyse without nesting event loops
+        msgs = storage.get_msgs(str(path))
+        await _analyse(msgs, args.your_name, args.target_name, args.words_file, store_msgs=False)
         return
 
     if not (args.telegram or args.vkopt_file):
