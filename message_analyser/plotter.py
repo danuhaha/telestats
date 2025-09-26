@@ -179,25 +179,30 @@ def pie_messages_per_author(msgs, your_name, target_name, path_to_save):
     labels = [f"{your_name}\n({your_messages_len})",
               f"{target_name}\n({target_messages_len})",
               f"Forwarded\n({forwarded})"]
-    explode = (.0, .0, .2)
+    #explode = (.0, .0, .2)
 
     fig, ax = _init_axes(figsize=(8, 8), subplot_kw=dict(aspect="equal"))
 
-    text_props = {"color": "white"}
+    text_props = {"color": "white", "fontsize": 15}
     if _ROBOTO_FONT_SEMIBOLD:
         text_props["fontproperties"] = _ROBOTO_FONT_SEMIBOLD
 
-    wedges, _, autotexts = ax.pie(x=data, explode=explode, colors=["C0","C1","#6062db"],
+    wedges, _, autotexts = ax.pie(x=data, colors=["C0", "C1", "#6062db"],
                                   autopct=lambda pct: f"{pct:.1f}%",
-                                  wedgeprops={ "alpha": 0.85},
+                                  wedgeprops={'linewidth' : 5, 'edgecolor' : ax.figure.get_facecolor()},
                                   textprops=text_props)
 
-    legend_kwargs = {"loc": "center", "bbox_to_anchor": (0.5, -0.05), "ncol": 3}
-    if _ROBOTO_FONT_SEMIBOLD:
-        legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
-    ax.legend(wedges, labels, **legend_kwargs)
+    # Create donut hole matching background color.
+    face_color = ax.figure.get_facecolor()
+    centre_circle = plt.Circle((0, 0), 0.75, facecolor=face_color, edgecolor=face_color)
+    ax.add_artist(centre_circle)
 
-    plt.setp(autotexts, color="white", fontsize=13, weight="bold")
+    legend_kwargs = {"loc": "center", "bbox_to_anchor": (0.5, 0.0), "ncol": 3}
+    #if _ROBOTO_FONT_SEMIBOLD:
+    #    legend_kwargs["prop"] = _ROBOTO_FONT_SEMIBOLD
+    ax.legend(wedges, labels,fontsize = '17', **legend_kwargs)
+
+    plt.setp(autotexts, color="white", fontsize=15, weight="bold")
 
     fig.tight_layout()
     fig.savefig(os.path.join(path_to_save, pie_messages_per_author.__name__ + ".png"), dpi=500)
